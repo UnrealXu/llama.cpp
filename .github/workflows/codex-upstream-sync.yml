@@ -18,11 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
       TARGET: ${{ github.repository }}
       TARGET_BRANCH: 'master'
     steps:
       - name: Disable inherited build workflows and cancel extra runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           gh api --paginate "repos/$TARGET/actions/workflows?per_page=100" --jq '.workflows[] | select(.state == "active" and .path != ".github/workflows/codex-upstream-sync.yml") | .id' | while read -r id; do
@@ -52,3 +54,17 @@ jobs:
             echo "New upstream commits merged: $(jq -r '.behind_by' before.json)"
             echo "Remaining upstream commits: $(jq -r '.behind_by' after.json)"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep inherited builds disabled after sync
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$TARGET/actions/workflows?per_page=100" --jq '.workflows[] | select(.state == "active" and .path != ".github/workflows/codex-upstream-sync.yml") | .id' | while read -r id; do
+            gh api --method PUT "repos/$TARGET/actions/workflows/$id/disable"
+          done
+          for status in queued in_progress; do
+            gh api --paginate "repos/$TARGET/actions/runs?status=$status&per_page=100" --jq '.workflow_runs[] | select(.name != "Sync upstream") | .id' | while read -r id; do
+              gh api --method POST "repos/$TARGET/actions/runs/$id/cancel" || true
+            done
+          done
